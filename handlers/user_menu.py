@@ -10,7 +10,7 @@ from utils.config import MENU_DATA, SHIFTS, TEXT_FIELDS
 router = Router()
 
 
-# --- ФУНКЦИЯ ПОДГОТОВКИ СПИСКА ДЛЯ МАТРИЦЫ ---
+# --- ФУНКЦИЯ ПОДГОТОВКИ СПИСКА ---
 def flatten_stage_data(stage, stage_data, category=None):
     items = []
     if "items" in stage_data: return stage_data["items"]
@@ -60,7 +60,7 @@ async def menu_navigation(call: types.CallbackQuery, callback_data: MenuCB, stat
     data = await state.get_data()
     text, kb = "", None
 
-    # --- ЗАЩИТА ОТ СБОЯ ---
+    # ЗАЩИТА ОТ СБОЯ
     if level > 0 and not data.get("product"):
         await call.message.edit_text("🔄 Бот обновлен. Начните заново:",
                                      reply_markup=get_menu_keyboard(list(MENU_DATA.keys()), 1, 0))
@@ -89,6 +89,7 @@ async def menu_navigation(call: types.CallbackQuery, callback_data: MenuCB, stat
         stage = data.get("stage")
         stage_data = MENU_DATA[prod]["stages"][stage]
 
+        # Декор -> Кнопки
         if stage == "Декор":
             text = f"🎨 <b>{stage}</b>\nВыберите цвет:"
             groups = stage_data["groups"]
@@ -96,6 +97,7 @@ async def menu_navigation(call: types.CallbackQuery, callback_data: MenuCB, stat
             await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
             return
 
+        # Резкага -> Кнопки
         if "groups" in stage_data and isinstance(stage_data["groups"], dict):
             groups = list(stage_data["groups"].keys())
             text = f"📂 <b>{stage}</b>\nВыберите категорию:"
@@ -103,12 +105,13 @@ async def menu_navigation(call: types.CallbackQuery, callback_data: MenuCB, stat
             await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
             return
 
+        # Миксер/Цехдан -> Матрица
         await state.update_data(category=None)
         all_items = flatten_stage_data(stage, stage_data)
         await show_matrix(call, state, items=all_items, parent_name=stage, back_level=2)
         return
 
-    # LEVEL 4: МАТРИЦА
+    # LEVEL 4: МАТРИЦА ПОСЛЕ КАТЕГОРИИ
     elif level == 4:
         prod = data.get("product")
         stage = data.get("stage")
@@ -132,52 +135,80 @@ async def show_matrix(call: types.CallbackQuery, state: FSMContext, items: list,
     stage = data.get('stage')
     category_state = data.get('category')
 
-    # Флаг: показывать старые цифры или нет?
-    # Если мы нажали "Изменить" -> True. Если "Добавить" -> False (по умолчанию None/False)
+    # Флаг: True = Редактирование, False = Добавление
     is_edit_mode = data.get('is_edit_mode', False)
 
     batch_temp = {}
+    items_to_show = []
 
-    # ЗАГРУЖАЕМ ЦИФРЫ ТОЛЬКО ЕСЛИ ЭТО РЕЖИМ РЕДАКТИРОВАНИЯ
-    if is_edit_mode:
-        for item_key in items:
-            target_cat = None
+    # --- ЛОГИКА ФИЛЬТРАЦИИ ---
+    for item_key in items:
+        # Определяем, как этот ключ выглядит в БД (Category/SubCategory)
+        target_cat = None
+        target_sub = None
+
+        if category_state:
+            target_cat = category_state
+            target_sub = item_key
+        elif " | " in item_key:
+            parts = item_key.split(" | ")
+            target_cat = parts[0]
+            target_sub = parts[1]
+        else:
+            target_cat = item_key
             target_sub = None
 
-            if category_state:
-                target_cat = category_state
-                target_sub = item_key
-            elif " | " in item_key:
-                parts = item_key.split(" | ")
-                target_cat = parts[0]
-                target_sub = parts[1]
-            else:
-                target_cat = item_key
-                target_sub = None
+        # Проверяем, есть ли уже в корзине
+        in_cart = False
+        cart_value = None
 
-            for cart_item in cart:
-                if (cart_item['product'] == prod and
-                        cart_item['shift'] == shift and
-                        cart_item['stage'] == stage and
-                        cart_item['category'] == target_cat and
-                        cart_item['sub_category'] == target_sub):
+        for cart_item in cart:
+            if (cart_item['product'] == prod and
+                    cart_item['shift'] == shift and
+                    cart_item['stage'] == stage and
+                    cart_item['category'] == target_cat and
+                    cart_item['sub_category'] == target_sub):
 
-                    if cart_item.get('is_text_field'):
-                        batch_temp[item_key] = cart_item['sub_category']
-                    elif not cart_item.get('is_empty'):
-                        batch_temp[item_key] = cart_item['quantity']
-                    break
+                in_cart = True
+                if cart_item.get('is_text_field'):
+                    cart_value = cart_item['sub_category']
+                elif not cart_item.get('is_empty'):
+                    cart_value = cart_item['quantity']
+                break
 
-    # Если мы НЕ в режиме редактирования, batch_temp останется пустым -> кнопки будут чистыми (-)
+        # ЕСЛИ РЕЖИМ ДОБАВЛЕНИЯ (Қўшиш)
+        if not is_edit_mode:
+            # Если товар УЖЕ в корзине -> СКРЫВАЕМ ЕГО
+            if in_cart:
+                continue
+                # Если нет в корзине -> ПОКАЗЫВАЕМ
+            items_to_show.append(item_key)
+
+        # ЕСЛИ РЕЖИМ РЕДАКТИРОВАНИЯ (Ўзгартириш)
+        else:
+            # Показываем ВСЕ
+            items_to_show.append(item_key)
+            # И подгружаем значения
+            if in_cart and cart_value is not None:
+                batch_temp[item_key] = cart_value
+
     await state.update_data(batch_temp=batch_temp)
-    await state.update_data(matrix_context={"items": items, "parent_name": parent_name, "back_level": back_level})
+    await state.update_data(
+        matrix_context={"items": items_to_show, "parent_name": parent_name, "back_level": back_level})
 
     unit = "кг" if stage == "Миксер" else "шт"
     full_title = f"{prod} | {shift} | {stage}"
     if back_level == 3: full_title += f" | {parent_name}"
 
-    text = (f"📝 <b>{full_title}</b>\n\n👇 Введите данные:\nВ конце нажмите <b>💾 Сақлаш</b>.")
-    kb = get_batch_keyboard(items, batch_temp, back_level, unit=unit)
+    mode_text = "(Қўшиш режими)" if not is_edit_mode else "(Ўзгартириш режими)"
+
+    # Если в режиме добавления всё уже выбрано
+    if not items_to_show and not is_edit_mode:
+        text = f"📝 <b>{full_title}</b>\n\n✅ Все позиции из этого раздела уже добавлены.\nНажмите <b>«Назад»</b> или перейдите в <b>«Узгартириш»</b>, чтобы изменить."
+    else:
+        text = (f"📝 <b>{full_title}</b> {mode_text}\n\n👇 Введите данные:\nВ конце нажмите <b>💾 Сақлаш</b>.")
+
+    kb = get_batch_keyboard(items_to_show, batch_temp, back_level, unit=unit)
     await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 
@@ -249,6 +280,9 @@ async def save_batch_handler(call: types.CallbackQuery, state: FSMContext):
     batch_temp = data.get("batch_temp", {})
     ctx = data.get("matrix_context")
 
+    # Флаг режима: True=Перезапись, False=Суммирование
+    is_edit_mode = data.get('is_edit_mode', False)
+
     if not batch_temp:
         await call.answer("⚠️ Пусто!", show_alert=True)
         return
@@ -260,14 +294,8 @@ async def save_batch_handler(call: types.CallbackQuery, state: FSMContext):
     category_state = data.get('category')
     items_list = ctx["items"]
 
-    # --- ЛОГИКА СОХРАНЕНИЯ ---
-    # Мы сохраняем ТОЛЬКО то, что есть в batch_temp (то есть то, что юзер ввел или что загрузилось при редактировании)
-    # Если кнопки были пустые и их не трогали - они не сохранятся и не перезапишут старое нулями.
-
     for item_key in items_list:
-        # Проверяем, есть ли данные в матрице
-        if item_key not in batch_temp:
-            continue  # ПРОПУСКАЕМ нетронутые кнопки
+        if item_key not in batch_temp: continue
 
         val = batch_temp.get(item_key)
 
@@ -290,6 +318,7 @@ async def save_batch_handler(call: types.CallbackQuery, state: FSMContext):
             sub_db = None
 
         is_text = item_key in TEXT_FIELDS
+        # Для текста всегда перезапись
         qty_db = final_val if not is_text else 1
         sub_db_final = sub_db
         if is_text and not is_empty: sub_db_final = f"{final_val}"
@@ -305,7 +334,7 @@ async def save_batch_handler(call: types.CallbackQuery, state: FSMContext):
             'is_text_field': is_text
         }
 
-        # Ищем дубликаты и обновляем их
+        # --- ГЛАВНАЯ ЛОГИКА ОБНОВЛЕНИЯ ---
         found = False
         for i, existing_item in enumerate(cart):
             if (existing_item['product'] == new_item['product'] and
@@ -313,7 +342,17 @@ async def save_batch_handler(call: types.CallbackQuery, state: FSMContext):
                     existing_item['stage'] == new_item['stage'] and
                     existing_item['category'] == new_item['category'] and
                     existing_item['sub_category'] == new_item['sub_category']):
-                cart[i] = new_item
+
+                # Если режим "Изменить" или текст -> ПЕРЕЗАПИСЬ
+                if is_edit_mode or is_text:
+                    cart[i] = new_item
+                # Если режим "Добавить" -> СУММИРОВАНИЕ (на всякий случай, хотя кнопки скрыты)
+                else:
+                    if not existing_item['is_empty'] and not new_item['is_empty']:
+                        cart[i]['quantity'] += new_item['quantity']
+                    elif existing_item['is_empty'] and not new_item['is_empty']:
+                        cart[i] = new_item
+
                 found = True
                 break
 
@@ -322,8 +361,9 @@ async def save_batch_handler(call: types.CallbackQuery, state: FSMContext):
 
     await state.update_data(cart=cart, batch_temp={}, category=None)
 
-    # --- СПИСОК КОРЗИНЫ ---
     current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+    current_shift = shift if shift else (cart[0]['shift'] if cart else "-")
+
     summary_lines = []
     counter = 1
     for item in cart:
@@ -337,7 +377,6 @@ async def save_batch_handler(call: types.CallbackQuery, state: FSMContext):
 
         sub_cat_print = item['sub_category']
         if item.get('is_text_field'): sub_cat_print = ""
-
         sub_text = f" | {sub_cat_print}" if sub_cat_print else ""
 
         line = f"{counter}. {item['stage']} | {item['category']}{sub_text} — {val_display}"
@@ -348,8 +387,9 @@ async def save_batch_handler(call: types.CallbackQuery, state: FSMContext):
     if not summary_text: summary_text = "Пусто"
 
     total_msg = (
-        f"🛒 <b>Сизнинг корзинангиз (Ваша корзина):</b>\n"
-        f"📅 <b>{current_time}</b>\n\n"
+        f"🛒 <b>Сизнинг корзинангиз:</b>\n"
+        f"🕒 Смена: <b>{current_shift}</b>\n"
+        f"📅 {current_time}\n\n"
         f"{summary_text}\n\n"
         f"💾 <b>Сақланди!</b> Давом етамизми ёки жунатасизми?"
     )
@@ -366,6 +406,8 @@ async def confirm_order_handler(call: types.CallbackQuery, state: FSMContext, bo
     if not cart: return
 
     current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+    current_shift = cart[0]['shift'] if cart else "-"
+
     report_lines = []
     for item in cart:
         if item.get('is_empty'): continue
@@ -393,9 +435,9 @@ async def confirm_order_handler(call: types.CallbackQuery, state: FSMContext, bo
     if admin_id:
         full_report = (
                 f"🔥 <b>Ишлаб чиқариш ҳисоботи</b>\n"
-                f"📅 <b>Сана: {current_time}</b>\n"
+                f"📅 Сана: {current_time}\n"
                 f"👤 {user_info[1]} ({user_info[2]})\n"
-                f"🕒 Смена: {cart[0]['shift']}\n"
+                f"🕒 Смена: <b>{current_shift}</b>\n"
                 f"➖➖➖➖➖➖➖➖\n"
                 + "\n".join(report_lines)
         )
@@ -407,7 +449,7 @@ async def confirm_order_handler(call: types.CallbackQuery, state: FSMContext, bo
     final_user_text = "\n".join(report_lines)
     await call.message.edit_text(
         f"✅ <b>Хисобот муваффақиятли юборилди!</b>\n"
-        f"📅 <b>Сана: {current_time}</b>\n\n"
+        f"📅 {current_time}\n\n"
         f"📋 <b>Юборилган рўйхат:</b>\n"
         f"{final_user_text}",
         parse_mode="HTML"
@@ -419,28 +461,58 @@ async def confirm_order_handler(call: types.CallbackQuery, state: FSMContext, bo
 # --- 6. ДОБАВИТЬ НОВОЕ (ЧИСТЫЙ ЛИСТ) ---
 @router.callback_query(F.data == "add_new")
 async def add_new_handler(call: types.CallbackQuery, state: FSMContext):
-    # Выключаем режим редактирования -> Матрицы будут пустыми
+    # Выключаем показ старых цифр (Будет чисто)
     await state.update_data(is_edit_mode=False)
+    await state.update_data(batch_temp={})
 
-    # Сбрасываем категорию
-    await state.update_data(category=None, stage=None, product=None)
+    data = await state.get_data()
+    prod = data.get('product')
+    stage = data.get('stage')
+    category = data.get('category')
 
-    await call.message.edit_text(
-        "🏭 Выберите продукт (Главное меню):",
-        reply_markup=get_menu_keyboard(list(MENU_DATA.keys()), 1, 0)
-    )
+    if not prod or not stage:
+        await call.message.edit_text("🏭 Выберите продукт:",
+                                     reply_markup=get_menu_keyboard(list(MENU_DATA.keys()), 1, 0))
+        await state.set_state(OrderFlow.making_order)
+        return
+
+    stage_data = MENU_DATA[prod]["stages"][stage]
+
+    # Если уже в категории -> остаемся
+    if category:
+        all_items = flatten_stage_data(stage, stage_data, category=category)
+        await show_matrix(call, state, items=all_items, parent_name=category, back_level=3)
+        return
+
+    # Если это Миксер/Цехдан -> остаемся
+    if "items" in stage_data or ("groups" in stage_data and isinstance(stage_data["groups"], list)):
+        all_items = flatten_stage_data(stage, stage_data)
+        await show_matrix(call, state, items=all_items, parent_name=stage, back_level=2)
+        return
+
+    # Иначе (Декор/Резкага без выбранной категории) -> Выбор категории
+    if stage == "Декор":
+        groups = stage_data["groups"]
+        kb = get_menu_keyboard(groups, 4, 3)
+        await call.message.edit_text(f"🎨 <b>{stage}</b>\nВыберите цвет:", reply_markup=kb, parse_mode="HTML")
+    elif "groups" in stage_data and isinstance(stage_data["groups"], dict):
+        groups = list(stage_data["groups"].keys())
+        kb = get_menu_keyboard(groups, 4, 3)
+        await call.message.edit_text(f"📂 <b>{stage}</b>\nВыберите категорию:", reply_markup=kb, parse_mode="HTML")
+
     await state.set_state(OrderFlow.making_order)
 
 
 # --- 7. ИЗМЕНИТЬ (ГРУЗИМ СТАРЫЕ ЦИФРЫ) ---
 @router.callback_query(F.data == "edit_current")
 async def edit_current_handler(call: types.CallbackQuery, state: FSMContext):
-    # Включаем режим редактирования -> Матрицы покажут старые цифры
+    # Включаем режим показа старого
     await state.update_data(is_edit_mode=True)
 
     data = await state.get_data()
     prod = data.get('product')
     stage = data.get('stage')
+    category = data.get('category')
 
     if not prod or not stage:
         await add_new_handler(call, state)
@@ -448,21 +520,25 @@ async def edit_current_handler(call: types.CallbackQuery, state: FSMContext):
 
     stage_data = MENU_DATA[prod]["stages"][stage]
 
-    if stage == "Декор" or ("groups" in stage_data and isinstance(stage_data["groups"], dict)):
-        if stage == "Декор":
-            groups = stage_data["groups"]
-        else:
-            groups = list(stage_data["groups"].keys())
+    if category:
+        all_items = flatten_stage_data(stage, stage_data, category=category)
+        await show_matrix(call, state, items=all_items, parent_name=category, back_level=3)
+        return
 
-        text = f"📂 <b>{stage}</b>\nВыберите категорию для изменения:"
+    if "items" in stage_data or ("groups" in stage_data and isinstance(stage_data["groups"], list)):
+        all_items = flatten_stage_data(stage, stage_data)
+        await show_matrix(call, state, items=all_items, parent_name=stage, back_level=2)
+        return
+
+    if stage == "Декор":
+        groups = stage_data["groups"]
         kb = get_menu_keyboard(groups, 4, 3)
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-
-    else:
-        shift = data.get('shift')
-        text = f"📦 {prod} | 🕒 {shift}\n⚙️ Выберите отдел:"
-        items = list(MENU_DATA[prod]["stages"].keys())
-        kb = get_menu_keyboard(items, 3, 2)
-        await call.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        await call.message.edit_text(f"🎨 <b>{stage}</b>\nВыберите цвет для изменения:", reply_markup=kb,
+                                     parse_mode="HTML")
+    elif "groups" in stage_data and isinstance(stage_data["groups"], dict):
+        groups = list(stage_data["groups"].keys())
+        kb = get_menu_keyboard(groups, 4, 3)
+        await call.message.edit_text(f"📂 <b>{stage}</b>\nВыберите категорию для изменения:", reply_markup=kb,
+                                     parse_mode="HTML")
 
     await state.set_state(OrderFlow.making_order)
