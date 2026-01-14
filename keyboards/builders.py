@@ -15,38 +15,49 @@ def get_menu_keyboard(items: list, next_level: int, current_level: int):
     return builder.as_markup()
 
 
+# --- ОБНОВЛЕННАЯ КЛАВИАТУРА КОРЗИНЫ ---
 def get_cart_keyboard():
     builder = InlineKeyboardBuilder()
-    builder.button(text="➕ Узгартириш", callback_data="add_more")
+
+    # Кнопка 1: Добавить ДРУГОЙ товар -> Ведет в начало
+    builder.button(text="➕ Добавить", callback_data="add_new")
+
+    # Кнопка 2: Изменить ЭТОТ товар -> Ведет назад в матрицу
+    builder.button(text="📝 Ўзгартириш", callback_data="edit_current")
+
+    # Кнопка 3: Отправить
     builder.button(text="✅ Жунатиш", callback_data="confirm_order")
-    builder.adjust(1)
+
+    builder.adjust(2, 1)
     return builder.as_markup()
 
 
-# --- ИЗМЕНЕНИЯ ЗДЕСЬ ---
+# --------------------------------------
+
 def get_batch_keyboard(items: list, current_data: dict, back_level: int, unit: str = "шт"):
     builder = InlineKeyboardBuilder()
 
     for item in items:
-        qty = current_data.get(item)
+        val = current_data.get(item)
 
-        # Если число введено, добавляем единицу измерения (шт или кг)
-        # Пример: " : 50 шт"
-        if qty is not None:
-            qty_text = f" : {qty} {unit}"
+        if val is not None:
+            if isinstance(val, int):
+                val_text = f" : {val} {unit}"
+            else:
+                val_str = str(val)
+                if len(val_str) > 10: val_str = val_str[:10] + "..."
+                val_text = f" : {val_str}"
         else:
-            qty_text = " : -"
+            val_text = " : -"
 
-        # Обрезаем value для безопасности
         safe_value = item[:30]
 
         builder.button(
-            text=f"{item}{qty_text}",
+            text=f"{item}{val_text}",
             callback_data=MenuCB(level=999, value=safe_value, action="edit")
         )
 
-    # Кнопка сохранения (Оставил текст как у тебя на скрине или стандартный)
-    builder.button(text="💾 Cаклаш", callback_data=MenuCB(level=999, value="save", action="save"))
+    builder.button(text="💾 Сақлаш", callback_data=MenuCB(level=999, value="save", action="save"))
     builder.button(text="🔙 Назад", callback_data=MenuCB(level=back_level, value="back", action="nav"))
 
     builder.adjust(1)
